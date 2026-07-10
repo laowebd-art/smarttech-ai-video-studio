@@ -1,0 +1,16 @@
+node_modules
+dist
+src
+public
+index.html
+vite.config.ts
+tailwind.config.js
+postcss.config.js
+tsconfig.node.json
+.env
+.env.local
+.git
+.gitignore
+README.md
+DEPLOY.md
+supabase
