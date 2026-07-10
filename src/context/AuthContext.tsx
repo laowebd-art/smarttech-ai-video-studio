@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { Profile } from "@/types";
 
 interface AuthContextValue {
@@ -31,6 +31,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let isMounted = true;
 
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return () => {
+        isMounted = false;
+      };
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       if (!isMounted) return;
       setSession(data.session);
@@ -56,6 +63,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signUp: AuthContextValue["signUp"] = async (email, password, displayName) => {
+    if (!isSupabaseConfigured) {
+      return { error: "Supabase is not configured for this deployment yet." };
+    }
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -65,15 +76,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signIn: AuthContextValue["signIn"] = async (email, password) => {
+    if (!isSupabaseConfigured) {
+      return { error: "Supabase is not configured for this deployment yet." };
+    }
+
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error: error?.message ?? null };
   };
 
   const signOut = async () => {
+    if (!isSupabaseConfigured) return;
     await supabase.auth.signOut();
   };
 
   const resetPassword: AuthContextValue["resetPassword"] = async (email) => {
+    if (!isSupabaseConfigured) {
+      return { error: "Supabase is not configured for this deployment yet." };
+    }
+
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/reset-password`,
     });
