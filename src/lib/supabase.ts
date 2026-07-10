@@ -2,6 +2,8 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const fallbackSupabaseUrl = "https://placeholder.supabase.co";
+const fallbackSupabaseAnonKey = "placeholder-anon-key";
 
 if (!supabaseUrl || !supabaseAnonKey) {
   // We don't throw here so the app can still render a helpful setup screen
@@ -21,6 +23,9 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // application code (services, components) via explicit casts. Once you run
 // `npx supabase gen types typescript` against your real project, you can
 // re-introduce `createClient<Database>()` for full end-to-end type safety.
-export const supabase = createClient(supabaseUrl ?? "", supabaseAnonKey ?? "");
-
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+export const supabase = createClient(
+  isSupabaseConfigured ? supabaseUrl : fallbackSupabaseUrl,
+  isSupabaseConfigured ? supabaseAnonKey : fallbackSupabaseAnonKey
+);
