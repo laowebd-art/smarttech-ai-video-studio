@@ -2,7 +2,9 @@ import { Router } from "express";
 import type { Response } from "express";
 import { supabaseAdmin } from "../lib/supabaseAdmin";
 import { requireAuth, verifyProjectOwnership, type AuthedRequest } from "../lib/auth";
-import { synthesizeSpeech, estimateDurationSeconds, type VoiceStyle } from "../lib/ttsProviders";
+import { routeTask } from "../lib/router/router";
+import { AllProvidersFailedError, ProviderNotAvailableError } from "../lib/router/types";
+import type { VoiceGenInput, VoiceGenOutput, VoiceStyle } from "../lib/adapters/voice/openaiTtsAdapter";
 import { uploadAudioBuffer, getSignedAudioUrl, deleteAudioObject, audioPathForScene } from "../lib/storageAdmin";
 
 export const audioRouter = Router();
@@ -11,6 +13,45 @@ audioRouter.use(requireAuth);
 audioRouter.use(verifyProjectOwnership);
 
 const VOICE_STYLES: VoiceStyle[] = ["calm", "serious", "emotional", "energetic", "documentary", "friendly"];
+
+const PREVIEW_TEXT = "Hello! This is a quick preview of this voice style.";
+
+// ---------------------------------------------------------------------------
+// POST /api/audio/preview — a short, ephemeral TTS sample. Not persisted to
+// audio_assets or Storage; the audio bytes are streamed straight back so the
+// UI can let a user audition a voice style before generating real scene audio.
+// ---------------------------------------------------------------------------
+audioRouter.post("/preview", async (req: AuthedRequest, res: Response) => {
+  const { voiceStyle } = req.body ?? {};
+  if (voiceStyle && !VOICE_STYLES.includes(voiceStyle)) {
+    return res.status(400).json({ error: `\`voiceStyle\` must be one of: ${VOICE_STYLES.join(", ")}` });
+  }
+  const style: VoiceStyle = voiceStyle || "calm";
+
+  try {
+    const result = await routeTask<VoiceGenInput, VoiceGenOutput>(
+      "voice_generation",
+      { text: PREVIEW_TEXT, voiceStyle: style },
+      { userId: req.userId!, feature: "voice_preview" }
+    );
+    res.setHeader("Content-Type", result.data.contentType);
+    res.setHeader("X-Provider", result.providerName);
+    res.send(result.data.buffer);
+  } catch (err: any) {
+    if (err instanceof ProviderNotAvailableError) {
+      res.status(503).json({ error: "No voice-generation provider is registered on this server." });
+    } else if (err instanceof AllProvidersFailedError) {
+      res.status(502).json({ error: "Voice preview failed on every configured provider." });
+    } else {
+      res.status(502).json({ error: err.message ?? "Failed to generate voice preview." });
+    }
+  }
+});
+
+function estimateDurationSeconds(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round((words / 2.5) * 10) / 10);
+}
 
 /** Finds an existing audio_assets row for (project, scene) or (project, full-project), or null. */
 async function findExistingAsset(projectId: string, sceneId: string | null) {
@@ -53,7 +94,7 @@ async function upsertAudioAsset(params: {
 // POST /api/audio/generate-scene
 // ---------------------------------------------------------------------------
 audioRouter.post("/generate-scene", async (req: AuthedRequest, res: Response) => {
-  const { projectId, sceneId, voiceStyle, provider } = req.body ?? {};
+  const { projectId, sceneId, voiceStyle } = req.body ?? {};
 
   if (!projectId || !sceneId) {
     return res.status(400).json({ error: "`projectId` and `sceneId` are required." });
@@ -79,14 +120,18 @@ audioRouter.post("/generate-scene", async (req: AuthedRequest, res: Response) =>
   const style: VoiceStyle = voiceStyle || "calm";
 
   try {
-    const tts = await synthesizeSpeech(scene.voiceover_text, style, provider);
+    const result = await routeTask<VoiceGenInput, VoiceGenOutput>(
+      "voice_generation",
+      { text: scene.voiceover_text, voiceStyle: style },
+      { userId: req.userId!, projectId, feature: "voice_generate" }
+    );
     const path = audioPathForScene(req.userId!, projectId, sceneId);
-    await uploadAudioBuffer(path, tts.buffer, tts.contentType);
+    await uploadAudioBuffer(path, result.data.buffer, result.data.contentType);
 
     const asset = await upsertAudioAsset({
       projectId,
       sceneId,
-      provider: tts.provider,
+      provider: result.providerName,
       voiceStyle: style,
       storagePath: path,
       durationSeconds: estimateDurationSeconds(scene.voiceover_text),
@@ -97,12 +142,11 @@ audioRouter.post("/generate-scene", async (req: AuthedRequest, res: Response) =>
     res.json({ asset, signedUrl });
   } catch (err: any) {
     console.error("[generate-scene audio]", err);
-    // Best-effort: record the failure so the UI can show a failed badge.
     try {
       await upsertAudioAsset({
         projectId,
         sceneId,
-        provider: provider || process.env.TTS_PROVIDER || "openai",
+        provider: "unknown",
         voiceStyle: style,
         storagePath: "",
         durationSeconds: 0,
@@ -111,7 +155,13 @@ audioRouter.post("/generate-scene", async (req: AuthedRequest, res: Response) =>
     } catch {
       /* ignore secondary failure */
     }
-    res.status(502).json({ error: err.message ?? "Failed to generate voice-over." });
+    if (err instanceof ProviderNotAvailableError) {
+      res.status(503).json({ error: "No voice-generation provider is registered on this server." });
+    } else if (err instanceof AllProvidersFailedError) {
+      res.status(502).json({ error: "Voice generation failed on every configured provider. Please try again shortly." });
+    } else {
+      res.status(502).json({ error: err.message ?? "Failed to generate voice-over." });
+    }
   }
 });
 
@@ -121,7 +171,7 @@ audioRouter.post("/generate-scene", async (req: AuthedRequest, res: Response) =>
 // UI can show which scenes succeeded/failed without losing the whole batch.
 // ---------------------------------------------------------------------------
 audioRouter.post("/generate-project", async (req: AuthedRequest, res: Response) => {
-  const { projectId, voiceStyle, provider } = req.body ?? {};
+  const { projectId, voiceStyle } = req.body ?? {};
 
   if (!projectId) return res.status(400).json({ error: "`projectId` is required." });
   if (voiceStyle && !VOICE_STYLES.includes(voiceStyle)) {
@@ -148,13 +198,17 @@ audioRouter.post("/generate-project", async (req: AuthedRequest, res: Response) 
       continue;
     }
     try {
-      const tts = await synthesizeSpeech(scene.voiceover_text, style, provider);
+      const result = await routeTask<VoiceGenInput, VoiceGenOutput>(
+        "voice_generation",
+        { text: scene.voiceover_text, voiceStyle: style },
+        { userId: req.userId!, projectId, feature: "voice_generate" }
+      );
       const path = audioPathForScene(req.userId!, projectId, scene.id);
-      await uploadAudioBuffer(path, tts.buffer, tts.contentType);
+      await uploadAudioBuffer(path, result.data.buffer, result.data.contentType);
       await upsertAudioAsset({
         projectId,
         sceneId: scene.id,
-        provider: tts.provider,
+        provider: result.providerName,
         voiceStyle: style,
         storagePath: path,
         durationSeconds: estimateDurationSeconds(scene.voiceover_text),
@@ -223,7 +277,6 @@ audioRouter.delete("/:assetId", async (req: AuthedRequest, res: Response) => {
     if (asset.storage_path) await deleteAudioObject(asset.storage_path);
   } catch (err) {
     console.error("[delete audio] storage cleanup failed:", err);
-    // continue — still delete the DB row so the UI doesn't get stuck
   }
 
   await supabaseAdmin.from("audio_assets").delete().eq("id", assetId);

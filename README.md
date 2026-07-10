@@ -36,6 +36,16 @@ This repository currently implements **all six phases**, Phase 1 through Phase 6
 Every phase builds on top of this foundation without breaking changes —
 the full database schema for every phase was included from Phase 1.
 
+**Since Phase 6**, the platform grew a proper AI Router: every AI capability
+(text generation, voice, video) now goes through capability-based routing
+with automatic provider fallback, instead of a hardcoded provider per
+feature. The two first modules built on it end-to-end are **AI Video
+Studio** (now including standalone text-to-video and image-to-video via
+Kling/Veo/Runway) and **AI Voice Studio**. Read
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full picture of what's real
+vs. schema-only groundwork — it's written to be an honest map, not a sales
+pitch.
+
 ## Stack
 
 - **Frontend**: React 18 + TypeScript + Vite, Tailwind CSS, React Router
@@ -70,7 +80,12 @@ the full database schema for every phase was included from Phase 1.
    - `supabase/migrations/004_project_captions.sql`
    - `supabase/migrations/005_audio_assets_updates.sql`
    - `supabase/migrations/006_visual_and_subtitle_updates.sql`
-3. Then run `supabase/seed/templates.sql` to load the 8 default templates.
+   - `supabase/migrations/007_ai_studio_platform.sql`
+   - `supabase/migrations/008_ai_generation_jobs.sql`
+3. Then run `supabase/seed/templates.sql` to load the 8 default templates,
+   and `supabase/seed/provider_configs.sql` to load the AI Router's provider
+   catalog and default routing priority (Kling → Veo → Runway for video,
+   ElevenLabs → OpenAI for voice, OpenAI → Anthropic for text).
 4. In **Authentication → Providers**, make sure Email sign-up is enabled.
    (For local development you can turn off "Confirm email" to skip the
    verification step.)

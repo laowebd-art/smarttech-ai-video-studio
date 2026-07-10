@@ -145,6 +145,31 @@ export interface SubtitleAsset {
   updated_at: string;
 }
 
+export type VideoGenMode = "text_to_video" | "image_to_video";
+
+export interface AiGenerationJob {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  scene_id: string | null;
+  capability: string;
+  mode: VideoGenMode;
+  provider_name: string | null;
+  external_job_id: string | null;
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+  progress: number;
+  input: { prompt: string; imageUrl?: string; durationSeconds?: number; aspectRatio?: string };
+  result_url: string | null;
+  storage_path: string | null;
+  error_message: string | null;
+  retry_count: number;
+  max_retries: number;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export interface RenderJob {
   id: string;
   project_id: string;

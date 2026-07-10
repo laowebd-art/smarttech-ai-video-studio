@@ -71,3 +71,27 @@ export async function getSignedRenderUrl(path: string, expiresInSeconds = 3600):
   if (error || !data) throw new Error(`Failed to sign render URL: ${error?.message ?? "unknown error"}`);
   return data.signedUrl;
 }
+
+// ---------------------------------------------------------------------------
+// AI-generated video clips (Kling/Veo/Runway output), distinct from the
+// FFmpeg-composited renders above.
+// ---------------------------------------------------------------------------
+const AI_VIDEOS_BUCKET = "ai-generated-videos";
+
+export function aiVideoPathForJob(userId: string, jobId: string): string {
+  return `${userId}/${jobId}.mp4`;
+}
+
+export async function uploadAiVideoBuffer(path: string, buffer: Buffer): Promise<void> {
+  const { error } = await supabaseAdmin.storage.from(AI_VIDEOS_BUCKET).upload(path, buffer, {
+    contentType: "video/mp4",
+    upsert: true,
+  });
+  if (error) throw new Error(`Failed to upload generated video to storage: ${error.message}`);
+}
+
+export async function getSignedAiVideoUrl(path: string, expiresInSeconds = 3600): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(AI_VIDEOS_BUCKET).createSignedUrl(path, expiresInSeconds);
+  if (error || !data) throw new Error(`Failed to sign generated-video URL: ${error?.message ?? "unknown error"}`);
+  return data.signedUrl;
+}

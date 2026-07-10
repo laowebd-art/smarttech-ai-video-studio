@@ -12,6 +12,7 @@ const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const ProjectsList = lazy(() => import("@/pages/projects/ProjectsList"));
 const NewProject = lazy(() => import("@/pages/projects/NewProject"));
 const ProjectDetail = lazy(() => import("@/pages/projects/ProjectDetail"));
+const AiVideoStudio = lazy(() => import("@/pages/AiVideoStudio"));
 const Templates = lazy(() => import("@/pages/Templates"));
 const RenderQueue = lazy(() => import("@/pages/RenderQueue"));
 const ExportCenter = lazy(() => import("@/pages/ExportCenter"));
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/projects" element={<ProtectedRoute><ProjectsList /></ProtectedRoute>} />
         <Route path="/projects/new" element={<ProtectedRoute><NewProject /></ProtectedRoute>} />
         <Route path="/projects/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
+        <Route path="/ai-video-studio" element={<ProtectedRoute><AiVideoStudio /></ProtectedRoute>} />
         <Route path="/templates" element={<ProtectedRoute><Templates /></ProtectedRoute>} />
         <Route path="/render-queue" element={<ProtectedRoute><RenderQueue /></ProtectedRoute>} />
         <Route path="/export-center" element={<ProtectedRoute><ExportCenter /></ProtectedRoute>} />

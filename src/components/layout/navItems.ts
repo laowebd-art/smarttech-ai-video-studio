@@ -6,6 +6,7 @@ import {
   ListVideo,
   Download,
   Settings,
+  Film,
   type LucideIcon,
 } from "lucide-react";
 
@@ -19,6 +20,7 @@ export const navItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/projects/new", label: "Create Video", icon: PlusCircle },
+  { to: "/ai-video-studio", label: "AI Video Studio", icon: Film },
   { to: "/templates", label: "Templates", icon: LayoutTemplate },
   { to: "/render-queue", label: "Render Queue", icon: ListVideo },
   { to: "/export-center", label: "Export Center", icon: Download },

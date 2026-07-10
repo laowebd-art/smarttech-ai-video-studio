@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Mic, Sparkles, RefreshCw, Trash2, AlertCircle } from "lucide-react";
+import { Mic, Sparkles, RefreshCw, Trash2, AlertCircle, Play, Square } from "lucide-react";
 import { Card, CardBody } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/context/ToastContext";
 import { sceneService } from "@/services/sceneService";
 import { projectService } from "@/services/projectService";
-import { audioService, type VoiceStyle, type TtsProvider } from "@/services/audioService";
+import { audioService, type VoiceStyle } from "@/services/audioService";
 import type { AudioAsset, Project, Scene } from "@/types";
 
 const VOICE_STYLES: { value: VoiceStyle; label: string }[] = [
@@ -32,10 +32,12 @@ export default function VoiceoverStudio({
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [assets, setAssets] = useState<AudioAsset[]>([]);
   const [loading, setLoading] = useState(true);
-  const [provider, setProvider] = useState<TtsProvider>("openai");
   const [voiceStyle, setVoiceStyle] = useState<VoiceStyle>("calm");
   const [busyAll, setBusyAll] = useState(false);
   const [busySceneId, setBusySceneId] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null);
+  const [previewProvider, setPreviewProvider] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -64,7 +66,7 @@ export default function VoiceoverStudio({
     }
     setBusyAll(true);
     try {
-      const { results } = await audioService.generateForProject(project.id, voiceStyle, provider);
+      const { results } = await audioService.generateForProject(project.id, voiceStyle);
       const failed = results.filter((r) => r.status === "failed");
       const skipped = results.filter((r) => r.status === "skipped");
       if (failed.length === 0 && skipped.length === 0) {
@@ -89,7 +91,7 @@ export default function VoiceoverStudio({
     }
     setBusySceneId(scene.id);
     try {
-      const { asset } = await audioService.generateForScene(project.id, scene.id, voiceStyle, provider);
+      const { asset } = await audioService.generateForScene(project.id, scene.id, voiceStyle);
       setAssets((prev) => {
         const others = prev.filter((a) => a.scene_id !== scene.id);
         return [...others, asset];
@@ -99,6 +101,27 @@ export default function VoiceoverStudio({
       showToast(e.message ?? "Failed to generate voice-over", "error");
     } finally {
       setBusySceneId(null);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (previewAudio) {
+      previewAudio.pause();
+      setPreviewAudio(null);
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const { url, provider } = await audioService.preview(voiceStyle);
+      const audio = new Audio(url);
+      audio.onended = () => setPreviewAudio(null);
+      setPreviewAudio(audio);
+      setPreviewProvider(provider);
+      await audio.play();
+    } catch (e: any) {
+      showToast(e.message ?? "Failed to preview voice", "error");
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -116,19 +139,28 @@ export default function VoiceoverStudio({
     <div className="space-y-5">
       <Card>
         <CardBody className="space-y-4">
-          <div className="grid sm:grid-cols-2 gap-4">
-            <Select label="Voice provider" value={provider} onChange={(e) => setProvider(e.target.value as TtsProvider)}>
-              <option value="openai">OpenAI TTS</option>
-              <option value="elevenlabs">ElevenLabs</option>
-            </Select>
-            <Select label="Voice style" value={voiceStyle} onChange={(e) => setVoiceStyle(e.target.value as VoiceStyle)}>
-              {VOICE_STYLES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </Select>
+          <div className="flex items-end gap-2 max-w-md">
+            <div className="flex-1">
+              <Select label="Voice style" value={voiceStyle} onChange={(e) => setVoiceStyle(e.target.value as VoiceStyle)}>
+                {VOICE_STYLES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <Button
+              variant="secondary"
+              icon={previewAudio ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              loading={previewing}
+              onClick={handlePreview}
+            >
+              {previewAudio ? "Stop" : "Preview"}
+            </Button>
           </div>
+          {previewProvider && !previewAudio && (
+            <p className="text-xs text-gray-400">Last preview was generated by {previewProvider}.</p>
+          )}
           <div className="flex justify-end">
             <Button icon={<Sparkles className="h-4 w-4" />} loading={busyAll} onClick={handleGenerateAll}>
               Generate voice-over for all scenes
@@ -163,6 +195,9 @@ export default function VoiceoverStudio({
                       </span>
                       <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">Scene {scene.scene_number}</span>
                       {asset && <StatusBadge status={asset.status} />}
+                      {asset?.status === "ready" && asset.provider && (
+                        <span className="text-xs text-gray-400">via {asset.provider}</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -201,9 +236,9 @@ export default function VoiceoverStudio({
       )}
 
       <p className="text-xs text-gray-400">
-        Audio is generated by your <code>server/</code> API using {provider === "openai" ? "OpenAI TTS" : "ElevenLabs"} and
-        stored privately in the <code>project-audio</code> Supabase Storage bucket. Playback URLs are short-lived signed
-        links fetched on demand.
+        Voice style is a creative choice — which AI provider actually generates the audio is decided automatically by
+        the AI Router (see Settings → AI Providers) with fallback if the primary provider is unavailable. Each
+        scene's card shows which provider ended up serving it once ready.
       </p>
     </div>
   );

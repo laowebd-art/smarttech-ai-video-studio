@@ -1,7 +1,8 @@
 import { Router } from "express";
 import type { Response } from "express";
-import { generateJson } from "../lib/aiProviders";
-import { logAiUsage } from "../lib/usageLog";
+import { routeTask } from "../lib/router/router";
+import { AllProvidersFailedError, ProviderNotAvailableError } from "../lib/router/types";
+import type { TextGenInput } from "../lib/adapters/text/openaiTextAdapter";
 import { supabaseAdmin } from "../lib/supabaseAdmin";
 import { requireAuth, verifyProjectOwnership, type AuthedRequest } from "../lib/auth";
 
@@ -11,6 +12,25 @@ aiRouter.use(requireAuth);
 aiRouter.use(verifyProjectOwnership);
 
 const TONES = ["emotional", "educational", "motivational", "story", "news", "product ad", "documentary"];
+
+/** Routes a text-generation task and turns router-level failures into clean HTTP responses. */
+async function routeText(input: TextGenInput, ctx: { userId: string; projectId?: string; feature: string }, res: Response): Promise<any | null> {
+  try {
+    const result = await routeTask("text_generation", input, ctx);
+    return result.data;
+  } catch (err: any) {
+    if (err instanceof ProviderNotAvailableError) {
+      res.status(503).json({ error: "No AI text provider is registered on this server." });
+    } else if (err instanceof AllProvidersFailedError) {
+      console.error(`[AIRouter] ${ctx.feature}:`, err.message);
+      res.status(502).json({ error: "AI generation failed on every configured provider. Please try again shortly." });
+    } else {
+      console.error(`[${ctx.feature}]`, err);
+      res.status(502).json({ error: err.message ?? "AI generation failed." });
+    }
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/ai/generate-script
@@ -25,7 +45,7 @@ aiRouter.post("/generate-script", async (req: AuthedRequest, res: Response) => {
     return res.status(400).json({ error: `\`tone\` must be one of: ${TONES.join(", ")}` });
   }
 
-  const system = [
+  const systemPrompt = [
     "You are an expert short-form video scriptwriter for YouTube Shorts, TikTok, and Instagram/Facebook Reels.",
     "You write tight, spoken-word scripts meant to be read aloud in a vertical video, not written prose.",
     "Always return a JSON object with exactly these keys: hook, mainContent, cta, finalScript.",
@@ -34,7 +54,7 @@ aiRouter.post("/generate-script", async (req: AuthedRequest, res: Response) => {
     "Do not use hashtags, emojis, or stage directions inside the script text.",
   ].join(" ");
 
-  const user = [
+  const userPrompt = [
     `Topic: ${topic}`,
     `Tone: ${tone || "educational"}`,
     `Target duration: ${durationTarget || 30} seconds`,
@@ -42,25 +62,15 @@ aiRouter.post("/generate-script", async (req: AuthedRequest, res: Response) => {
     rawScript ? `The user already has a rough draft to build from:\n${rawScript}` : "No rough draft provided — write from scratch.",
   ].join("\n");
 
-  try {
-    const result = await generateJson(system, user);
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "script_generate",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({
-      hook: result.json.hook ?? "",
-      mainContent: result.json.mainContent ?? "",
-      cta: result.json.cta ?? "",
-      finalScript: result.json.finalScript ?? "",
-    });
-  } catch (err: any) {
-    console.error("[generate-script]", err);
-    res.status(502).json({ error: err.message ?? "Failed to generate script." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "script_generate" }, res);
+  if (json === null) return;
+
+  res.json({
+    hook: json.hook ?? "",
+    mainContent: json.mainContent ?? "",
+    cta: json.cta ?? "",
+    finalScript: json.finalScript ?? "",
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -73,32 +83,22 @@ aiRouter.post("/improve-script", async (req: AuthedRequest, res: Response) => {
     return res.status(400).json({ error: "`script` is required." });
   }
 
-  const system = [
+  const systemPrompt = [
     "You are a professional short-form video script editor.",
     "Improve the given script for hook strength, pacing, clarity, and spoken-word flow, while keeping the same core message and roughly the same length.",
     "Return a JSON object with exactly one key: improvedScript.",
   ].join(" ");
 
-  const user = [
+  const userPrompt = [
     `Tone: ${tone || "educational"}`,
     `Language: ${language || "en"}`,
     `Script to improve:\n${script}`,
   ].join("\n");
 
-  try {
-    const result = await generateJson(system, user);
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "script_improve",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({ improvedScript: result.json.improvedScript ?? script });
-  } catch (err: any) {
-    console.error("[improve-script]", err);
-    res.status(502).json({ error: err.message ?? "Failed to improve script." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "script_improve" }, res);
+  if (json === null) return;
+
+  res.json({ improvedScript: json.improvedScript ?? script });
 });
 
 // ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ aiRouter.post("/split-scenes", async (req: AuthedRequest, res: Response) => {
     return res.status(400).json({ error: "`script` is required." });
   }
 
-  const system = [
+  const systemPrompt = [
     "You break a short-form video script into scenes for production.",
     "Return a JSON object with exactly one key: scenes, an array of objects.",
     "Each scene object must have exactly these keys:",
@@ -123,27 +123,16 @@ aiRouter.post("/split-scenes", async (req: AuthedRequest, res: Response) => {
     "Scenes must cover the entire script in order with nothing omitted, and the sum of duration_seconds should be close to the target duration.",
   ].join(" ");
 
-  const user = [
+  const userPrompt = [
     `Target total duration: ${durationTarget || 30} seconds`,
     `Language: ${language || "en"}`,
     `Script:\n${script}`,
   ].join("\n");
 
-  try {
-    const result = await generateJson(system, user);
-    const scenes = Array.isArray(result.json.scenes) ? result.json.scenes : [];
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "scene_split",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({ scenes });
-  } catch (err: any) {
-    console.error("[split-scenes]", err);
-    res.status(502).json({ error: err.message ?? "Failed to split script into scenes." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "scene_split" }, res);
+  if (json === null) return;
+
+  res.json({ scenes: Array.isArray(json.scenes) ? json.scenes : [] });
 });
 
 // ---------------------------------------------------------------------------
@@ -156,36 +145,26 @@ aiRouter.post("/regenerate-scene", async (req: AuthedRequest, res: Response) => 
     return res.status(400).json({ error: "`voiceoverText` is required." });
   }
 
-  const system = [
+  const systemPrompt = [
     "You rewrite a single scene of a short-form video script.",
     "Return a JSON object with exactly these keys: voiceover_text, subtitle_text, visual_prompt, broll_keyword.",
     "Keep roughly the same length and meaning as the original, but improve wording and flow.",
     "broll_keyword must be 2-4 words suitable as a stock footage search query.",
   ].join(" ");
 
-  const user = [`Tone: ${tone || "educational"}`, `Language: ${language || "en"}`, `Original scene text: ${voiceoverText}`].join(
+  const userPrompt = [`Tone: ${tone || "educational"}`, `Language: ${language || "en"}`, `Original scene text: ${voiceoverText}`].join(
     "\n"
   );
 
-  try {
-    const result = await generateJson(system, user);
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "scene_regenerate",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({
-      voiceover_text: result.json.voiceover_text ?? voiceoverText,
-      subtitle_text: result.json.subtitle_text ?? voiceoverText,
-      visual_prompt: result.json.visual_prompt ?? "",
-      broll_keyword: result.json.broll_keyword ?? "",
-    });
-  } catch (err: any) {
-    console.error("[regenerate-scene]", err);
-    res.status(502).json({ error: err.message ?? "Failed to regenerate scene." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "scene_regenerate" }, res);
+  if (json === null) return;
+
+  res.json({
+    voiceover_text: json.voiceover_text ?? voiceoverText,
+    subtitle_text: json.subtitle_text ?? voiceoverText,
+    visual_prompt: json.visual_prompt ?? "",
+    broll_keyword: json.broll_keyword ?? "",
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -209,13 +188,13 @@ aiRouter.post("/generate-visual-prompt", async (req: AuthedRequest, res: Respons
     return res.status(404).json({ error: "Scene not found." });
   }
 
-  const system = [
+  const systemPrompt = [
     "You write concrete, vivid visual descriptions for short-form video B-roll — suitable as either an AI image generation prompt or a stock footage search query.",
     "Return a JSON object with exactly one key: visualPrompt, a single descriptive sentence.",
     "Describe camera framing, subject, setting, lighting, and mood. Avoid abstract or unfilmable concepts.",
   ].join(" ");
 
-  const user = [
+  const userPrompt = [
     scene.voiceover_text ? `Scene voice-over: ${scene.voiceover_text}` : null,
     scene.broll_keyword ? `Existing B-roll keyword: ${scene.broll_keyword}` : null,
     scene.visual_prompt ? `Existing visual prompt to improve on: ${scene.visual_prompt}` : null,
@@ -223,20 +202,10 @@ aiRouter.post("/generate-visual-prompt", async (req: AuthedRequest, res: Respons
     .filter(Boolean)
     .join("\n");
 
-  try {
-    const result = await generateJson(system, user);
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "visual_prompt_generate",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({ visualPrompt: result.json.visualPrompt ?? "" });
-  } catch (err: any) {
-    console.error("[generate-visual-prompt]", err);
-    res.status(502).json({ error: err.message ?? "Failed to generate visual prompt." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "visual_prompt_generate" }, res);
+  if (json === null) return;
+
+  res.json({ visualPrompt: json.visualPrompt ?? "" });
 });
 
 // ---------------------------------------------------------------------------
@@ -249,7 +218,7 @@ aiRouter.post("/captions-hashtags", async (req: AuthedRequest, res: Response) =>
     return res.status(400).json({ error: "Provide at least `topic` or `script`." });
   }
 
-  const system = [
+  const systemPrompt = [
     "You write platform-native captions for short vertical videos.",
     "Return a JSON object with exactly these keys:",
     "youtube (a YouTube Shorts title, under 100 characters),",
@@ -261,28 +230,18 @@ aiRouter.post("/captions-hashtags", async (req: AuthedRequest, res: Response) =>
     "alternativeHooks (an array of exactly 3 alternative opening-line hooks for this video, each a single sentence).",
   ].join(" ");
 
-  const user = [topic ? `Topic: ${topic}` : null, script ? `Script:\n${script}` : null].filter(Boolean).join("\n");
+  const userPrompt = [topic ? `Topic: ${topic}` : null, script ? `Script:\n${script}` : null].filter(Boolean).join("\n");
 
-  try {
-    const result = await generateJson(system, user);
-    await logAiUsage({
-      userId: req.userId!,
-      projectId,
-      feature: "caption_generate",
-      provider: result.provider,
-      tokensUsed: result.tokensUsed,
-    });
-    res.json({
-      youtube: result.json.youtube ?? "",
-      tiktok: result.json.tiktok ?? "",
-      facebook: result.json.facebook ?? "",
-      instagram: result.json.instagram ?? "",
-      shortDescription: result.json.shortDescription ?? "",
-      hashtags: Array.isArray(result.json.hashtags) ? result.json.hashtags : [],
-      alternativeHooks: Array.isArray(result.json.alternativeHooks) ? result.json.alternativeHooks : [],
-    });
-  } catch (err: any) {
-    console.error("[captions-hashtags]", err);
-    res.status(502).json({ error: err.message ?? "Failed to generate captions and hashtags." });
-  }
+  const json = await routeText({ systemPrompt, userPrompt }, { userId: req.userId!, projectId, feature: "caption_generate" }, res);
+  if (json === null) return;
+
+  res.json({
+    youtube: json.youtube ?? "",
+    tiktok: json.tiktok ?? "",
+    facebook: json.facebook ?? "",
+    instagram: json.instagram ?? "",
+    shortDescription: json.shortDescription ?? "",
+    hashtags: Array.isArray(json.hashtags) ? json.hashtags : [],
+    alternativeHooks: Array.isArray(json.alternativeHooks) ? json.alternativeHooks : [],
+  });
 });
