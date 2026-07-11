@@ -8,6 +8,7 @@
     "server": "tsx server/index.ts",
     "server:dev": "tsx watch server/index.ts",
     "dev:all": "concurrently -n web,api -c blue,green \"npm:dev\" \"npm:server:dev\"",
+    "build:api": "esbuild server/app.ts --bundle --platform=node --format=esm --target=node20 --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=api/[...path].js",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint ."
@@ -33,6 +34,7 @@
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.0.1",
+    "esbuild": "^0.28.1",
     "eslint": "^9.10.0",
     "postcss": "^8.4.45",
     "tailwindcss": "^3.4.11",
