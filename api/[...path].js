@@ -38246,30 +38246,73 @@ function signHS256Jwt(payload, secret, headerExtra = {}) {
 
 // server/lib/adapters/video/klingVideoAdapter.ts
 function baseUrl() {
-  return process.env.KLING_API_BASE_URL || "https://api.klingai.com";
+  return process.env.KLING_API_BASE_URL || (process.env.KLING_API_KEY ? "https://api-singapore.klingai.com" : "https://api.klingai.com");
+}
+function hasLegacyKeyPair() {
+  return Boolean(process.env.KLING_ACCESS_KEY) && Boolean(process.env.KLING_SECRET_KEY);
+}
+function isModernApiKey() {
+  return Boolean(process.env.KLING_API_KEY);
 }
 function authHeader() {
+  const apiKey2 = process.env.KLING_API_KEY;
+  if (apiKey2) return { header: `Bearer ${apiKey2}`, mode: "modern" };
   const accessKey = process.env.KLING_ACCESS_KEY;
   const secretKey = process.env.KLING_SECRET_KEY;
-  if (!accessKey || !secretKey) throw new Error("KLING_ACCESS_KEY / KLING_SECRET_KEY are not configured on the server.");
+  if (!accessKey || !secretKey) throw new Error("KLING_API_KEY or KLING_ACCESS_KEY / KLING_SECRET_KEY are not configured on the server.");
   const now = Math.floor(Date.now() / 1e3);
   const token = signHS256Jwt({ iss: accessKey, exp: now + 1800, nbf: now - 5 }, secretKey);
-  return `Bearer ${token}`;
+  return { header: `Bearer ${token}`, mode: "legacy" };
 }
 function mapAspectRatio(ratio) {
   if (ratio === "16:9" || ratio === "1:1") return ratio;
   return "9:16";
+}
+function mapDuration(durationSeconds) {
+  const rounded = durationSeconds ? Math.round(durationSeconds) : 5;
+  return Math.min(Math.max(rounded, 3), 15);
 }
 var klingVideoAdapter = {
   id: "kling-video",
   providerName: "kling",
   capabilities: ["video_generation"],
   isConfigured() {
-    return Boolean(process.env.KLING_ACCESS_KEY) && Boolean(process.env.KLING_SECRET_KEY);
+    return isModernApiKey() || hasLegacyKeyPair();
   },
   async submit(input, _ctx) {
     const isImageMode = input.mode === "image_to_video";
     if (isImageMode && !input.imageUrl) throw new Error("imageUrl is required for image-to-video generation.");
+    const auth = authHeader();
+    if (auth.mode === "modern") {
+      const modelPath = process.env.KLING_MODEL || "kling-3.0-turbo";
+      const body2 = {
+        settings: {
+          duration: mapDuration(input.durationSeconds),
+          resolution: process.env.KLING_RESOLUTION || "720p",
+          ...isImageMode ? {} : { aspect_ratio: mapAspectRatio(input.aspectRatio) }
+        },
+        options: { watermark_info: { enabled: false } }
+      };
+      if (isImageMode) {
+        body2.contents = [
+          { type: "prompt", text: input.prompt },
+          { type: "first_frame", url: input.imageUrl }
+        ];
+      } else {
+        body2.prompt = input.prompt;
+      }
+      const path3 = `/${isImageMode ? "image-to-video" : "text-to-video"}/${modelPath}`;
+      const response2 = await fetch(`${baseUrl()}${path3}`, {
+        method: "POST",
+        headers: { Authorization: auth.header, "Content-Type": "application/json" },
+        body: JSON.stringify(body2)
+      });
+      const json2 = await response2.json().catch(() => null);
+      if (!response2.ok || !json2?.data?.id) {
+        throw new Error(`Kling API error (${response2.status}): ${json2?.message ?? await response2.text().catch(() => "")}`.slice(0, 300));
+      }
+      return { externalJobId: `modern:${json2.data.id}` };
+    }
     const path2 = isImageMode ? "/v1/videos/image2video" : "/v1/videos/text2video";
     const body = {
       model_name: process.env.KLING_MODEL || "kling-v1",
@@ -38280,7 +38323,7 @@ var klingVideoAdapter = {
     if (isImageMode) body.image = input.imageUrl;
     const response = await fetch(`${baseUrl()}${path2}`, {
       method: "POST",
-      headers: { Authorization: authHeader(), "Content-Type": "application/json" },
+      headers: { Authorization: auth.header, "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
     const json = await response.json().catch(() => null);
@@ -38290,10 +38333,31 @@ var klingVideoAdapter = {
     return { externalJobId: `${isImageMode ? "i2v" : "t2v"}:${json.data.task_id}` };
   },
   async checkStatus(externalJobId) {
+    const auth = authHeader();
+    if (externalJobId.startsWith("modern:")) {
+      const taskId2 = externalJobId.slice("modern:".length);
+      const response2 = await fetch(`${baseUrl()}/tasks?task_ids=${encodeURIComponent(taskId2)}`, {
+        headers: { Authorization: auth.header, "Content-Type": "application/json" }
+      });
+      const json2 = await response2.json().catch(() => null);
+      const task = Array.isArray(json2?.data) ? json2.data[0] : null;
+      if (!response2.ok || !task) {
+        return { status: "failed", errorMessage: `Kling status check failed (${response2.status}): ${json2?.message ?? ""}`.slice(0, 300) };
+      }
+      if (task.status === "succeeded") {
+        const videoUrl = task.outputs?.find((output) => output?.type === "video")?.url;
+        if (!videoUrl) return { status: "failed", errorMessage: "Kling reported success but returned no video URL." };
+        return { status: "completed", resultUrl: videoUrl, progress: 100 };
+      }
+      if (task.status === "failed") {
+        return { status: "failed", errorMessage: task.message || "Kling generation failed." };
+      }
+      return { status: "processing", progress: task.status === "processing" ? 50 : 10 };
+    }
     const [kind, taskId] = externalJobId.split(":");
     const path2 = kind === "i2v" ? `/v1/videos/image2video/${taskId}` : `/v1/videos/text2video/${taskId}`;
     const response = await fetch(`${baseUrl()}${path2}`, {
-      headers: { Authorization: authHeader() }
+      headers: { Authorization: auth.header }
     });
     const json = await response.json().catch(() => null);
     if (!response.ok || !json?.data) {
