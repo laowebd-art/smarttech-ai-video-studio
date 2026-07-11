@@ -1,3 +1,4 @@
+import "dotenv/config";
 import app from "./app";
 import { listProviderStatus } from "./lib/router/router";
 import { listAsyncProviderStatus } from "./lib/router/asyncRouter";
